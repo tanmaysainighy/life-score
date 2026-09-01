@@ -1,0 +1,4 @@
+# Everything here is behind a login, and profiles and leaderboards carry real
+# names. Nothing should be indexed.
+User-agent: *
+Disallow: /

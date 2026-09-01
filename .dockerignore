@@ -1,0 +1,11 @@
+node_modules
+.next
+data
+.git
+.env
+.env.local
+tests
+scripts
+*.md
+.claude
+tsconfig.tsbuildinfo

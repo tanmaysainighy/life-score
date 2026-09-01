@@ -1,0 +1,259 @@
+@import "tailwindcss";
+
+/*
+  LifeScore — a personal operating system with a game underneath.
+
+  The system is deliberately thin: a type scale, a spacing rhythm, hairline
+  rules, and one accent. Structure comes from typography and whitespace, not
+  from putting every fact in its own bordered box. Remove every shadow and the
+  layout should still hold.
+
+  Colour carries meaning and nothing else:
+    accent  XP earned, progress, the reader's own row
+    gain    a number that went up
+    flame   an active streak
+  Primary actions are solid ink, so the accent is never spent on chrome.
+*/
+
+@theme {
+  --font-display: var(--f-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--f-sans), ui-sans-serif, system-ui, sans-serif;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-rule: var(--rule);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-gain: var(--gain);
+  --color-flame: var(--flame);
+  --color-warn: var(--warn);
+}
+
+:root {
+  --bg:      #fcfcfb;
+  --surface: #ffffff;
+  --sunken:  #f3f2f0;
+  --rule:    #e6e4e0;   /* hairlines, not borders */
+  --ink:     #121212;
+  --muted:   #5a5954;
+  --faint:   #928f88;
+  --accent:  #a8620a;   /* amber, darkened to carry text on light */
+  --gain:    #146b46;
+  --flame:   #c2410c;
+  --warn:    #a02c1c;
+  --on-ink:  #fcfcfb;   /* text on a solid-ink surface */
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:      #0a0a0a;
+    --surface: #101010;
+    --sunken:  #171717;
+    --rule:    #232322;
+    --ink:     #f2f1ee;
+    --muted:   #9e9c96;
+    --faint:   #6b6963;
+    --accent:  #f0a23c;
+    --gain:    #4ac585;
+    --flame:   #ff7a45;
+    --warn:    #ff8f73;
+    --on-ink:  #0a0a0a;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg:      #0a0a0a;
+  --surface: #101010;
+  --sunken:  #171717;
+  --rule:    #232322;
+  --ink:     #f2f1ee;
+  --muted:   #9e9c96;
+  --faint:   #6b6963;
+  --accent:  #f0a23c;
+  --gain:    #4ac585;
+  --flame:   #ff7a45;
+  --warn:    #ff8f73;
+  --on-ink:  #0a0a0a;
+  color-scheme: dark;
+}
+
+* { border-color: var(--rule); }
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--ink); color: var(--on-ink); }
+
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* --- type scale ----------------------------------------------------------
+   display → heading → section → body → secondary → meta
+   One family for figures and headings, one for reading. Weight does the
+   hierarchy work; almost nothing else is bold.                             */
+
+.t-display {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(3.75rem, 13vw, 6rem);
+  line-height: .85;
+  letter-spacing: -0.045em;
+  font-variant-numeric: tabular-nums;
+}
+
+.t-figure {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.t-heading {
+  font-family: var(--font-display);
+  font-weight: 550;
+  font-size: clamp(1.35rem, 3.5vw, 1.6rem);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+/* Section markers. Small, spaced, quiet — they organise without shouting. */
+.t-section {
+  font-size: .6875rem;
+  font-weight: 500;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.t-meta { font-size: .8125rem; color: var(--faint); }
+.t-secondary { color: var(--muted); }
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* --- structure -----------------------------------------------------------
+   A hairline is the default separator. Sections are separated by space and a
+   single rule, never by a box each.                                        */
+
+.rule-t { border-top: 1px solid var(--rule); }
+.rule-b { border-bottom: 1px solid var(--rule); }
+
+/* --- controls ------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  min-height: 44px;
+  padding: 0 1.15rem;
+  border-radius: 9px;
+  font-size: .9375rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color .14s ease, color .14s ease, border-color .14s ease, opacity .14s ease;
+}
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-sm { min-height: 36px; padding: 0 .7rem; font-size: .8125rem; border-radius: 7px; }
+
+/*
+  Small controls and inline links stay visually small but must still be easy to
+  hit. This grows the touch area to 44px around the element without adding any
+  layout height, so density and accessibility don't have to trade off.
+*/
+.hit { position: relative; }
+.hit::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 44px;
+  transform: translateY(-50%);
+}
+@media (pointer: fine) { .hit::after { display: none; } }
+
+/* Primary is solid ink — the accent stays reserved for data. */
+.btn-primary { background: var(--ink); color: var(--on-ink); }
+.btn-primary:hover:not(:disabled) { opacity: .86; }
+
+.btn-quiet { background: var(--sunken); color: var(--ink); }
+.btn-quiet:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 10%, var(--sunken)); }
+
+.btn-bare { background: transparent; color: var(--muted); padding: 0 .5rem; }
+.btn-bare:hover:not(:disabled) { color: var(--ink); }
+
+.field {
+  width: 100%;
+  min-height: 44px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  padding: .55rem 0;
+  font-size: 1rem;            /* 16px — stops iOS zooming on focus */
+  color: var(--ink);
+  transition: border-color .14s ease;
+}
+.field::placeholder { color: var(--faint); }
+.field:focus { outline: none; border-bottom-color: var(--ink); }
+
+/* --- motion --------------------------------------------------------------
+   Short, and only where it explains something: entry, XP landing, reveal.  */
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translate3d(0, 6px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+.enter {
+  animation: fade-up .26s cubic-bezier(.2,.7,.3,1) both;
+  animation-delay: calc(var(--i, 0) * 35ms);
+}
+
+@keyframes lift-away {
+  0%   { opacity: 0; transform: translateY(2px); }
+  25%  { opacity: 1; transform: translateY(-8px); }
+  100% { opacity: 0; transform: translateY(-38px); }
+}
+.lift-away { animation: lift-away .9s cubic-bezier(.2,.7,.3,1) both; }
+
+@keyframes settle {
+  from { opacity: 0; transform: scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+.settle { animation: settle .2s cubic-bezier(.2,.7,.3,1) both; }
+
+/* Bars and meters share one curve so the page moves as one system. */
+.grow-h { transition: height .55s cubic-bezier(.2,.7,.3,1); }
+.grow-w { transition: width .55s cubic-bezier(.2,.7,.3,1); }
+
+.tap { transition: opacity .12s ease, background-color .14s ease; }
+.tap:active { opacity: .6; }
+
+/* Native disclosure, styled. No JavaScript for expanding a row. */
+details > summary { list-style: none; cursor: pointer; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] > summary .chev { transform: rotate(90deg); }
+.chev { transition: transform .16s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
