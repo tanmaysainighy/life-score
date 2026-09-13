@@ -12,16 +12,55 @@ import { rateLimit } from "@/lib/ratelimit";
 
 export type FormState = { error?: string };
 
-async function limitKey(): Promise<string> {
+/**
+ * The client controls the *first* entry in X-Forwarded-For, so keying the rate
+ * limit on it let a caller mint a fresh bucket per request and never trip the
+ * limit at all. The last entry is the one appended by the proxy closest to us
+ * and is the only part a client cannot forge.
+ *
+ * TRUSTED_PROXY_HEADER names a platform header to prefer where one exists
+ * (Vercel sets x-real-ip). Absent any header, everything shares one bucket:
+ * coarse, but it fails closed rather than open.
+ */
+async function clientKey(): Promise<string> {
   const list = await headers();
-  return list.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+
+  const trusted = process.env.TRUSTED_PROXY_HEADER;
+  if (trusted) {
+    const value = list.get(trusted)?.trim();
+    if (value) return value;
+  }
+
+  const realIp = list.get("x-real-ip")?.trim();
+  if (realIp) return realIp;
+
+  const forwarded = list.get("x-forwarded-for");
+  if (forwarded) {
+    const hops = forwarded.split(",").map((hop) => hop.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1];
+  }
+
+  return "unknown";
+}
+
+/**
+ * Credential stuffing spreads attempts across many addresses against one
+ * account, which an address-keyed limit never sees. Limiting the target email
+ * as well bounds that, independently of where the requests come from.
+ */
+function emailKey(email: string): string {
+  return `email:${email.trim().toLowerCase().slice(0, 200)}`;
 }
 
 export async function signIn(_state: FormState, formData: FormData): Promise<FormState> {
-  const limited = rateLimit("auth", await limitKey());
-  if (!limited.ok) return { error: `Too many attempts. Try again in ${limited.retryAfterSeconds}s.` };
+  const email = String(formData.get("email") ?? "");
 
-  const result = await authenticate(String(formData.get("email") ?? ""), String(formData.get("password") ?? ""));
+  for (const key of [await clientKey(), emailKey(email)]) {
+    const limited = rateLimit("auth", key);
+    if (!limited.ok) return { error: `Too many attempts. Try again in ${limited.retryAfterSeconds}s.` };
+  }
+
+  const result = await authenticate(email, String(formData.get("password") ?? ""));
   if ("error" in result) return { error: result.error };
 
   await startSession(result.id);
@@ -29,7 +68,7 @@ export async function signIn(_state: FormState, formData: FormData): Promise<For
 }
 
 export async function signUp(_state: FormState, formData: FormData): Promise<FormState> {
-  const limited = rateLimit("auth", await limitKey());
+  const limited = rateLimit("auth", await clientKey());
   if (!limited.ok) return { error: `Too many attempts. Try again in ${limited.retryAfterSeconds}s.` };
 
   const result = await createUser({
