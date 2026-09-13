@@ -290,37 +290,47 @@ export async function createEntry(
 
   const now = new Date();
   const day = localDay(now, user.timezone);
-
-  const minutesToday = (await get<{ total: number }>(
-    `SELECT COALESCE(SUM(duration_minutes), 0) AS total
-       FROM activity_logs WHERE user_id = ? AND local_day = ?`,
-    user.id, day,
-  ))?.total ?? 0;
-
-  const duplicateSince = new Date(now.getTime() - DUPLICATE_WINDOW_MINUTES * 60_000).toISOString();
-  const duplicate = (await get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM activity_logs
-      WHERE user_id = ? AND activity_id = ? AND duration_minutes = ? AND created_at >= ?`,
-    user.id, activity.id, input.durationMinutes, duplicateSince,
-  ))?.n ?? 0;
-
-  const issue = validateEntry(input.durationMinutes, {
-    category: activity.category,
-    minutesLoggedToday: minutesToday,
-    hasRecentDuplicate: duplicate > 0,
-  });
-  if (issue && (issue.severity === "error" || !options.acknowledged)) {
-    return { ok: false, issue };
-  }
-
-  const xp = scoreActivity({
-    baseXpPerHour: activity.base_xp_per_hour,
-    durationMinutes: input.durationMinutes,
-  });
-  const id = `LOG_${crypto.randomUUID()}`;
   const timestamp = now.toISOString();
+  const duplicateSince = new Date(now.getTime() - DUPLICATE_WINDOW_MINUTES * 60_000).toISOString();
 
-  await transaction(async () => {
+  /**
+   * Read, validate and write in one transaction, behind a row lock on the user.
+   *
+   * Reading the day total outside the transaction let two concurrent entries
+   * both see the same total, both pass the 24-hour check and both insert, so
+   * the cap could be exceeded by racing it. The lock serialises a single user's
+   * writes; it is taken on their own row, so it never blocks anyone else.
+   */
+  const outcome = await transaction(async (): Promise<{ blocked: ValidationIssue } | { id: string; xp: number; totalXp: number }> => {
+    await run(`SELECT id FROM users WHERE id = ? FOR UPDATE`, user.id);
+
+    const minutesToday = (await get<{ total: number }>(
+      `SELECT COALESCE(SUM(duration_minutes), 0) AS total
+         FROM activity_logs WHERE user_id = ? AND local_day = ?`,
+      user.id, day,
+    ))?.total ?? 0;
+
+    const duplicate = (await get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM activity_logs
+        WHERE user_id = ? AND activity_id = ? AND duration_minutes = ? AND created_at >= ?`,
+      user.id, activity.id, input.durationMinutes, duplicateSince,
+    ))?.n ?? 0;
+
+    const issue = validateEntry(input.durationMinutes, {
+      category: activity.category,
+      minutesLoggedToday: minutesToday,
+      hasRecentDuplicate: duplicate > 0,
+    });
+    if (issue && (issue.severity === "error" || !options.acknowledged)) {
+      return { blocked: issue };
+    }
+
+    const xp = scoreActivity({
+      baseXpPerHour: activity.base_xp_per_hour,
+      durationMinutes: input.durationMinutes,
+    });
+    const id = `LOG_${crypto.randomUUID()}`;
+
     await run(
       `INSERT INTO activity_logs
          (id, user_id, activity_id, raw_text, duration_minutes, xp, base_xp_per_hour,
@@ -331,11 +341,16 @@ export async function createEntry(
       input.confidence ?? 1, day, timestamp, timestamp,
     );
     await rememberPhrase(user.id, input.rawText, activity.id);
+
+    const totalXp = (await get<{ total: number }>(
+      `SELECT COALESCE(SUM(xp), 0) AS total FROM activity_logs WHERE user_id = ?`, user.id,
+    ))?.total ?? 0;
+
+    return { id, xp, totalXp };
   });
 
-  const totalXp = (await get<{ total: number }>(
-    `SELECT COALESCE(SUM(xp), 0) AS total FROM activity_logs WHERE user_id = ?`, user.id,
-  ))?.total ?? 0;
+  if ("blocked" in outcome) return { ok: false, issue: outcome.blocked };
+  const { id, xp, totalXp } = outcome;
 
   return { ok: true, id, xp, activity: publicActivity(activity), durationMinutes: input.durationMinutes, totalXp };
 }

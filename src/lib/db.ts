@@ -52,27 +52,95 @@ const globalForDb = globalThis as unknown as {
   __lifescoreReady?: Promise<void>;
 };
 
-/** `?` → `$1, $2, …`, leaving anything inside quotes alone. */
+/**
+ * `?` → `$1, $2, …`.
+ *
+ * Placeholders are only substituted in actual SQL: single- and double-quoted
+ * strings, dollar-quoted bodies, line comments and slash-star block comments
+ * (which nest in Postgres) are all skipped. Getting comments wrong is not
+ * cosmetic -- a stray `?` in one shifts the numbering of every parameter after
+ * it, and the query fails at runtime with a count mismatch and no obvious
+ * cause.
+ *
+ * `??` escapes to a literal `?`, which is how you reach Postgres's jsonb `?`
+ * operator without it being read as a placeholder.
+ */
 export function toPositional(sql: string): string {
   let index = 0;
-  let quote: string | null = null;
   let out = "";
+  let i = 0;
 
-  for (let i = 0; i < sql.length; i++) {
+  while (i < sql.length) {
     const char = sql[i];
-    if (quote) {
-      if (char === quote) quote = null;
-      out += char;
+    const next = sql[i + 1];
+
+    // -- line comment, to end of line
+    if (char === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      const stop = end === -1 ? sql.length : end;
+      out += sql.slice(i, stop);
+      i = stop;
       continue;
     }
+
+    // /* block comment */, nesting
+    if (char === "/" && next === "*") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < sql.length && depth > 0) {
+        if (sql[j] === "/" && sql[j + 1] === "*") { depth++; j += 2; continue; }
+        if (sql[j] === "*" && sql[j + 1] === "/") { depth--; j += 2; continue; }
+        j++;
+      }
+      out += sql.slice(i, j);
+      i = j;
+      continue;
+    }
+
+    // $tag$ dollar-quoted body $tag$
+    if (char === "$") {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i));
+      if (tag) {
+        const close = sql.indexOf(tag[0], i + tag[0].length);
+        const stop = close === -1 ? sql.length : close + tag[0].length;
+        out += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+
+    // '...' or "..." — a doubled quote inside closes and reopens, which lands
+    // in the right place either way.
     if (char === "'" || char === '"') {
-      quote = char;
-      out += char;
+      let j = i + 1;
+      while (j < sql.length && sql[j] !== char) j++;
+      out += sql.slice(i, Math.min(j + 1, sql.length));
+      i = j + 1;
       continue;
     }
-    out += char === "?" ? `$${++index}` : char;
+
+    if (char === "?") {
+      if (next === "?") { out += "?"; i += 2; continue; }
+      out += `$${++index}`;
+      i++;
+      continue;
+    }
+
+    out += char;
+    i++;
   }
+
   return out;
+}
+
+/** Local databases speak plaintext; everything else must verify TLS. */
+function isLocal(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
 }
 
 async function createDriver(): Promise<Driver> {
@@ -99,11 +167,21 @@ async function createDriver(): Promise<Driver> {
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-      // Managed Postgres (Neon, Supabase, Render) terminates TLS with its own
-      // chain; verification is handled by the provider's hostname.
-      ssl: url.includes("localhost") || url.includes("127.0.0.1")
+      // Verify the server certificate. Managed providers (Neon, Supabase,
+      // Render) all present chains that verify against the system roots, so
+      // the previous `rejectUnauthorized: false` bought nothing and accepted
+      // any certificate -- including one presented by something sitting
+      // between this process and the database, which every credential and
+      // every row crosses.
+      //
+      // DATABASE_SSL_CA lets a provider with a private root be pinned
+      // explicitly. Set DATABASE_SSL_INSECURE=1 only to get a broken host
+      // working temporarily; it restores the old, unverified behaviour.
+      ssl: isLocal(url)
         ? undefined
-        : { rejectUnauthorized: false },
+        : process.env.DATABASE_SSL_INSECURE === "1"
+          ? { rejectUnauthorized: false }
+          : { rejectUnauthorized: true, ...(process.env.DATABASE_SSL_CA ? { ca: process.env.DATABASE_SSL_CA } : {}) },
     });
 
     return {
