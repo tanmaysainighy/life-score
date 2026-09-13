@@ -44,7 +44,7 @@ the app is useful immediately.
 | Command | |
 | --- | --- |
 | `npm run dev` | development server |
-| `npm test` | 97 tests — no database server, no network |
+| `npm test` | 191 tests — no database server, no network |
 | `npm run build` / `npm start` | production build and server |
 | `npm run typecheck` | |
 | `npm run seed` | reapply the taxonomy after editing `taxonomy.ts` |
@@ -172,6 +172,17 @@ so there is no request waterfall. The activity timeline expands with a native
 - **Group data requires membership.** Non-members get a 404 rather than a 403, so
   a group's existence is not leaked.
 
+- **Auth attempts are limited per client and per target email.** The client key
+  prefers a trusted platform header, then the *last* `X-Forwarded-For` hop —
+  the first hop is client-controlled and keying on it let a caller mint a fresh
+  bucket per request. The email bucket bounds credential stuffing spread across
+  many addresses.
+- **An unknown email is hashed against a decoy** so sign-in takes the same
+  ~40 ms either way. Matching error messages alone do not prevent account
+  enumeration; the timing has to match too.
+- **The database connection verifies TLS.** `DATABASE_SSL_CA` pins a private
+  root where a provider needs one.
+
 Known limitation: the rate limiter and the leaderboard cache are in-process, so
 running more than one instance loosens the limits proportionally. Correct at one
 instance; moving them to Redis is the fix when that changes.
@@ -186,6 +197,11 @@ instance; moving them to Redis is the fix when that changes.
 | Same activity again within 10 min | warns, confirmable |
 
 Impossible entries are refused; improbable ones are questioned. Neither accuses.
+
+The day total is read, validated and written inside one transaction behind a row
+lock on the user, so two entries submitted at once cannot both pass the 24-hour
+check against the same stale total. The lock is on the user's own row and never
+blocks anyone else.
 
 ## Deploying
 
