@@ -52,26 +52,84 @@ const globalForDb = globalThis as unknown as {
   __lifescoreReady?: Promise<void>;
 };
 
-/** `?` → `$1, $2, …`, leaving anything inside quotes alone. */
+/**
+ * `?` → `$1, $2, …`.
+ *
+ * Placeholders are only substituted in actual SQL: single- and double-quoted
+ * strings, dollar-quoted bodies, line comments and slash-star block comments
+ * (which nest in Postgres) are all skipped. Getting comments wrong is not
+ * cosmetic -- a stray `?` in one shifts the numbering of every parameter after
+ * it, and the query fails at runtime with a count mismatch and no obvious
+ * cause.
+ *
+ * `??` escapes to a literal `?`, which is how you reach Postgres's jsonb `?`
+ * operator without it being read as a placeholder.
+ */
 export function toPositional(sql: string): string {
   let index = 0;
-  let quote: string | null = null;
   let out = "";
+  let i = 0;
 
-  for (let i = 0; i < sql.length; i++) {
+  while (i < sql.length) {
     const char = sql[i];
-    if (quote) {
-      if (char === quote) quote = null;
-      out += char;
+    const next = sql[i + 1];
+
+    // -- line comment, to end of line
+    if (char === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      const stop = end === -1 ? sql.length : end;
+      out += sql.slice(i, stop);
+      i = stop;
       continue;
     }
+
+    // /* block comment */, nesting
+    if (char === "/" && next === "*") {
+      let depth = 1;
+      let j = i + 2;
+      while (j < sql.length && depth > 0) {
+        if (sql[j] === "/" && sql[j + 1] === "*") { depth++; j += 2; continue; }
+        if (sql[j] === "*" && sql[j + 1] === "/") { depth--; j += 2; continue; }
+        j++;
+      }
+      out += sql.slice(i, j);
+      i = j;
+      continue;
+    }
+
+    // $tag$ dollar-quoted body $tag$
+    if (char === "$") {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(sql.slice(i));
+      if (tag) {
+        const close = sql.indexOf(tag[0], i + tag[0].length);
+        const stop = close === -1 ? sql.length : close + tag[0].length;
+        out += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+
+    // '...' or "..." — a doubled quote inside closes and reopens, which lands
+    // in the right place either way.
     if (char === "'" || char === '"') {
-      quote = char;
-      out += char;
+      let j = i + 1;
+      while (j < sql.length && sql[j] !== char) j++;
+      out += sql.slice(i, Math.min(j + 1, sql.length));
+      i = j + 1;
       continue;
     }
-    out += char === "?" ? `$${++index}` : char;
+
+    if (char === "?") {
+      if (next === "?") { out += "?"; i += 2; continue; }
+      out += `$${++index}`;
+      i++;
+      continue;
+    }
+
+    out += char;
+    i++;
   }
+
   return out;
 }
 
