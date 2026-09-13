@@ -1,7 +1,8 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { randomBytes, scryptSync, timingSafeEqual, randomUUID } from "node:crypto";
+import { randomBytes, scrypt, timingSafeEqual, randomUUID } from "node:crypto";
+import { promisify } from "node:util";
 import { get, run } from "./db";
 import type { SessionUser } from "./queries";
 
@@ -13,17 +14,37 @@ import type { SessionUser } from "./queries";
 const COOKIE = "lifescore_session";
 const SESSION_DAYS = 30;
 const SCRYPT_KEYLEN = 64;
+const MAX_PASSWORD_LENGTH = 200;
 
-export function hashPassword(password: string): string {
+/**
+ * scrypt takes ~40 ms. The synchronous form stalls Node's single thread for
+ * that long on every login and signup, so use the threadpool instead.
+ */
+const scryptAsync = promisify(scrypt) as (password: string, salt: string, keylen: number) => Promise<Buffer>;
+
+/**
+ * Hashed against when no account matches, so an unknown email costs the same
+ * work as a known one. Without it, returning early on a missing user makes the
+ * response ~40 ms faster and turns the login form into an account oracle
+ * regardless of the error message being identical.
+ *
+ * Built once, on first use rather than at import, so nothing blocks at boot.
+ */
+let dummyHash: Promise<string> | null = null;
+function decoyHash(): Promise<string> {
+  return (dummyHash ??= hashPassword(randomBytes(24).toString("hex")));
+}
+
+export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, SCRYPT_KEYLEN).toString("hex");
+  const hash = (await scryptAsync(password, salt, SCRYPT_KEYLEN)).toString("hex");
   return `scrypt:${salt}:${hash}`;
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [scheme, salt, hash] = stored.split(":");
   if (scheme !== "scrypt" || !salt || !hash) return false;
-  const candidate = scryptSync(password, salt, SCRYPT_KEYLEN);
+  const candidate = await scryptAsync(password, salt, SCRYPT_KEYLEN);
   const expected = Buffer.from(hash, "hex");
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
@@ -39,6 +60,9 @@ export async function createUser(input: {
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { error: "That email doesn't look right." };
   if (name.length < 2 || name.length > 40) return { error: "Your name should be 2–40 characters." };
   if (input.password.length < 8) return { error: "Use at least 8 characters for your password." };
+  if (input.password.length > MAX_PASSWORD_LENGTH) {
+    return { error: `Passwords can be at most ${MAX_PASSWORD_LENGTH} characters.` };
+  }
   if (await get(`SELECT 1 FROM users WHERE email = ?`, email)) {
     return { error: "An account with that email already exists." };
   }
@@ -49,7 +73,7 @@ export async function createUser(input: {
   await run(
     `INSERT INTO users (id, email, name, password_hash, timezone, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    id, email, name, hashPassword(input.password), input.timezone || "UTC", now, now,
+    id, email, name, await hashPassword(input.password), input.timezone || "UTC", now, now,
   );
 
   return { id, email, name, timezone: input.timezone || "UTC" };
@@ -61,8 +85,11 @@ export async function authenticate(email: string, password: string): Promise<Ses
        FROM users WHERE email = ?`,
     email.trim().toLowerCase(),
   );
-  // Same message either way so the form can't be used to enumerate accounts.
-  if (!user || !verifyPassword(password, user.password_hash)) {
+  // Same message AND the same work either way: an unknown email is hashed
+  // against a dummy so the response time does not reveal whether the account
+  // exists. Returning early here was a timing oracle worth ~40 ms.
+  const matches = await verifyPassword(password, user?.password_hash ?? (await decoyHash()));
+  if (!user || !matches) {
     return { error: "Email or password is incorrect." };
   }
   const { password_hash: _hash, ...rest } = user;
