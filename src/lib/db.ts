@@ -75,6 +75,16 @@ export function toPositional(sql: string): string {
   return out;
 }
 
+/** Local databases speak plaintext; everything else must verify TLS. */
+function isLocal(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
 async function createDriver(): Promise<Driver> {
   const url = process.env.DATABASE_URL;
 
@@ -99,11 +109,21 @@ async function createDriver(): Promise<Driver> {
       max: 10,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-      // Managed Postgres (Neon, Supabase, Render) terminates TLS with its own
-      // chain; verification is handled by the provider's hostname.
-      ssl: url.includes("localhost") || url.includes("127.0.0.1")
+      // Verify the server certificate. Managed providers (Neon, Supabase,
+      // Render) all present chains that verify against the system roots, so
+      // the previous `rejectUnauthorized: false` bought nothing and accepted
+      // any certificate -- including one presented by something sitting
+      // between this process and the database, which every credential and
+      // every row crosses.
+      //
+      // DATABASE_SSL_CA lets a provider with a private root be pinned
+      // explicitly. Set DATABASE_SSL_INSECURE=1 only to get a broken host
+      // working temporarily; it restores the old, unverified behaviour.
+      ssl: isLocal(url)
         ? undefined
-        : { rejectUnauthorized: false },
+        : process.env.DATABASE_SSL_INSECURE === "1"
+          ? { rejectUnauthorized: false }
+          : { rejectUnauthorized: true, ...(process.env.DATABASE_SSL_CA ? { ca: process.env.DATABASE_SSL_CA } : {}) },
     });
 
     return {
